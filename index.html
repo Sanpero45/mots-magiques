@@ -174,8 +174,14 @@
   /* ---------- Mot avec pièges ---------- */
   .word {
     font-size: clamp(2.4rem, 10vw, 4.4rem); font-weight: 800; letter-spacing: .06em;
-    text-align: center; line-height: 1.5; padding: 8px 0; word-break: break-word;
+    text-align: center; line-height: 1.5; padding: 8px 0;
   }
+  /* les lettres d'un même mot restent toujours sur la même ligne */
+  .tk { display: inline-block; white-space: nowrap; }
+  .slots .tk, .hunt .tk { display: flex; flex-wrap: nowrap; gap: inherit; }
+  .slots { column-gap: 18px; }
+  .hunt { column-gap: 18px; }
+  .choice { white-space: nowrap; overflow: hidden; }
   .L { display: inline-block; position: relative; min-width: .3em; }
   .t-silent { color: var(--silent); text-decoration: underline dotted var(--silent); text-decoration-thickness: 4px; text-underline-offset: 8px; }
   .t-silent::after { content: "🤫"; position: absolute; left: 50%; top: -.35em; transform: translateX(-50%); font-size: .32em; letter-spacing: 0; }
@@ -1128,6 +1134,23 @@ function say(text, slow, onend) {
   if (onend) u.onend = onend;
   speechSynthesis.speak(u);
 }
+// Dit plusieurs phrases l'une après l'autre, avec une vraie pause entre elles
+// (sinon « Magnifique ! » et le mot s'enchaînent trop vite : « magnifique ananas »).
+function sayParts(parts, gap) {
+  const list = parts.filter(Boolean);
+  let i = 0;
+  const next = () => {
+    if (i >= list.length) return;
+    const [text, slow] = Array.isArray(list[i]) ? list[i] : [list[i], false];
+    i++;
+    let done = false;
+    const go = () => { if (done) return; done = true; if (i < list.length) later(next, gap || 600); };
+    say(text, slow, go);
+    // filet de sécurité : certains appareils ne signalent pas la fin de la phrase
+    later(go, 900 + text.length * 110 * (slow ? 1.6 : 1));
+  };
+  next();
+}
 function spell(e) {
   const parts = [];
   const ch = e.chars;
@@ -1178,14 +1201,49 @@ function show(id) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.nav === tab));
   window.scrollTo(0, 0);
 }
+// Regroupe les cases/lettres de chaque mot dans un bloc insécable (les espaces séparent les mots).
+function tokensHTML(chars, cell) {
+  let out = '', open = false;
+  chars.forEach((c, i) => {
+    if (c.ch === ' ') { if (open) { out += '</span>'; open = false; } return; }
+    if (!open) { out += '<span class="tk">'; open = true; }
+    out += cell(c, i);
+  });
+  return out + (open ? '</span>' : '');
+}
 function wordHTML(e, plain) {
-  return e.chars.map(c => {
+  return tokensHTML(e.chars, (c, i) => wordCell(e, plain, c, i)).replace(/<\/span><span class="tk">/g, '</span> <span class="tk">');
+}
+function wordCell(e, plain, c) {
+  return [c].map(c => {
     const cls = plain ? '' : [c.silent && 't-silent', c.double && 't-double', c.accent && 't-accent'].filter(Boolean).join(' ');
     const L = `<span class="L ${cls}">${c.ch === ' ' ? '&nbsp;' : esc(c.ch)}</span>`;
     // les sons à plusieurs lettres sont soulignés d'un arc violet
     return (!plain && c.gs ? '<span class="grp">' : '') + L + (!plain && c.ge ? '</span>' : '');
   }).join('');
 }
+
+/* Ajustement à la largeur de l'écran : un mot trop long rétrécit au lieu d'être coupé. */
+function fitText(el) {
+  el.style.fontSize = '';
+  let fs = parseFloat(getComputedStyle(el).fontSize), guard = 0;
+  while (el.scrollWidth > el.clientWidth + 1 && guard++ < 25) { fs *= 0.92; el.style.fontSize = fs + 'px'; }
+}
+function fitCells(el) {
+  el.style.zoom = '';
+  const avail = el.clientWidth;
+  let widest = 0;
+  el.querySelectorAll('.tk').forEach(t => { widest = Math.max(widest, t.scrollWidth); });
+  if (widest > avail && avail > 0) el.style.zoom = String(Math.max(0.45, (avail / widest) * 0.98));
+}
+function fitAll() {
+  document.querySelectorAll('.screen.active .word, .choice').forEach(fitText);
+  document.querySelectorAll('.screen.active .slots, .screen.active .hunt').forEach(fitCells);
+}
+let fitQueued = false;
+function queueFit() { if (fitQueued) return; fitQueued = true; requestAnimationFrame(() => { fitQueued = false; fitAll(); }); }
+new MutationObserver(queueFit).observe(document.querySelector('main'), { childList: true, subtree: true });
+window.addEventListener('resize', queueFit);
 function sonsHTML(e) {
   if (!e.groups.length) return '<p class="muted" style="margin:0">Pas de son à plusieurs lettres dans ce mot : chaque lettre fait son propre son.</p>';
   return `<div class="sons">${e.groups.map((g, i) => `<button class="sonchip" data-son="${i}"><b>${esc(g.text)}</b> fait le son [${esc(g.son)}] 🔈</button>`).join('')}</div>`;
@@ -1408,7 +1466,7 @@ function finishWord(area) {
   save(); updateHeader(); renderProgress();
   const fb = area.querySelector('.feedback');
   if (fb) { fb.className = 'feedback ok'; fb.textContent = ok ? pick(PRAISE) + ' ⭐' : 'Tu as réussi ! 👍'; }
-  say((ok ? pick(PRAISE) + ' ' : '') + e.word);
+  sayParts([ok ? pick(PRAISE) : 'Tu as réussi !', e.word]);
   const nx = document.createElement('div');
   nx.className = 'row';
   nx.innerHTML = `<button class="btn big green" id="nextBtn">${game.i + 1 < game.words.length ? 'Mot suivant ➜' : 'Terminer 🏁'}</button>`;
@@ -1622,9 +1680,9 @@ function renderHunt() {
     ${e.emoji ? `<div class="emoji">${esc(e.emoji)}</div>` : ''}
     <p class="instr">Touche les lettres <b>pièges</b> : muettes 🤫, doublées 👯 ou avec un accent 🎩.</p>
     ${soundButtons(e)}
-    <div class="hunt">${e.chars.map((c, i) => c.fixed
-      ? `<span class="hl fixed">${c.ch === ' ' ? '&nbsp;' : esc(c.ch)}</span>`
-      : `<button class="hl" data-i="${i}">${esc(c.ch)}</button>`).join('')}</div>
+    <div class="hunt">${tokensHTML(e.chars, (c, i) => c.fixed
+      ? `<span class="hl fixed">${esc(c.ch)}</span>`
+      : `<button class="hl" data-i="${i}">${esc(c.ch)}</button>`)}</div>
     <p class="feedback" id="hFb">Il reste ${e.traps.length} piège${e.traps.length > 1 ? 's' : ''} à trouver.</p>
     <ul class="traps" id="hList"></ul>`;
   bindSound(area, e);
@@ -1756,7 +1814,7 @@ function renderQuiz() {
       game.penalty = true; b.disabled = true;
       b.classList.add('bad'); anim(b, 'shake'); beep(false);
       const fb = $('#qFb'); fb.className = 'feedback ko'; fb.textContent = pick(TRYAGAIN);
-      say('Essaie encore. ' + e.word);
+      sayParts(['Essaie encore.', e.word]);
     }
   });
   later(() => say(e.word), 250);
@@ -1777,7 +1835,7 @@ function renderScramble() {
       <button class="btn alt" data-act="slow">🐢 Lentement</button>
       <button class="btn alt" id="sHint">💡 Aide</button>
     </div>
-    <div class="slots" id="sSlots">${e.chars.map((c, i) => `<div class="slot ${c.fixed ? 'fixed' : ''}" data-i="${i}">${c.fixed ? esc(c.ch === ' ' ? '' : c.ch) : ''}</div>`).join('')}</div>
+    <div class="slots" id="sSlots">${tokensHTML(e.chars, (c, i) => `<div class="slot ${c.fixed ? 'fixed' : ''}" data-i="${i}">${c.fixed ? esc(c.ch) : ''}</div>`)}</div>
     <div class="tiles">${order.map(i => `<button class="tile" data-i="${i}">${esc(e.chars[i].ch)}</button>`).join('')}</div>
     <p class="feedback" id="sFb"></p>
     <div id="sAfter"></div>`;
@@ -1829,7 +1887,7 @@ const KB_ACC = ['é', 'è', 'ê', 'à', 'ç', 'ù', 'â', 'î', 'ô', 'û', 'ï'
 let typing = null; // { e, typed:[], need:[], mode, onDone }
 
 function typingHTML(e) {
-  return `<div class="slots" id="tSlots">${e.chars.map((c, i) => `<div class="slot ${c.fixed ? 'fixed' : ''}" data-i="${i}">${c.fixed ? esc(c.ch === ' ' ? '' : c.ch) : ''}</div>`).join('')}</div>
+  return `<div class="slots" id="tSlots">${tokensHTML(e.chars, (c, i) => `<div class="slot ${c.fixed ? 'fixed' : ''}" data-i="${i}">${c.fixed ? esc(c.ch) : ''}</div>`)}</div>
     <p class="feedback" id="tFb"></p>
     <div id="tAfter"></div>
     <div class="kbd" id="kbd">

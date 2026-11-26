@@ -429,6 +429,14 @@
   .missed { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
   .missed .chip { font-size: 1rem; padding: 6px 12px; }
 
+  /* ---------- Partage des listes ---------- */
+  .modal .card { max-height: calc(100vh - 32px); overflow-y: auto; }
+  .sharebox { display: flex; flex-direction: column; gap: 10px; text-align: left; }
+  .sharebox textarea { width: 100%; min-height: 90px; border-radius: 12px; border: 1px solid var(--line); padding: 10px; font-size: .95rem; background: var(--surface-2); user-select: text; -webkit-user-select: text; resize: vertical; }
+  .sharebox textarea.code { min-height: 70px; font-size: .8rem; word-break: break-all; }
+  .sharebox .lists { display: flex; flex-direction: column; gap: 6px; }
+  .sharebox .note { font-size: .95rem; color: var(--ink-soft); margin: 0; }
+
   /* ---------- Fenêtre / confettis ---------- */
   .modal { position: fixed; inset: 0; background: rgba(29,34,66,.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
   .modal .card { max-width: 420px; width: 100%; text-align: center; font-size: 1.2rem; display: flex; flex-direction: column; gap: 14px; }
@@ -642,6 +650,8 @@
       <select id="pListSelect"></select>
       <div class="row">
         <button class="btn alt" id="pNew">➕ Nouvelle liste</button>
+        <button class="btn alt" id="pShare">📤 Partager</button>
+        <button class="btn alt" id="pImport">📥 Importer</button>
         <button class="btn red" id="pDel">🗑️ Supprimer</button>
       </div>
 
@@ -664,6 +674,8 @@
           S'il se trompe, indiquez vous-même les lettres muettes entre crochets :
           <code>fusi[l]</code>, <code>ils joue[nt]</code>. Des crochets vides <code>ours[]</code> veulent dire « aucune lettre muette ».<br>
         • Une ligne commençant par <code>#</code> est ignorée.<br>
+        • « 📤 Partager » crée un lien à envoyer à un autre parent : en l'ouvrant, il retrouve vos listes dans son jeu.
+          « 📥 Importer » ajoute des listes reçues (lien ou texte).<br>
         • Au premier enregistrement d'une nouvelle liste, le jeu demande pour quels enfants elle est (pratique si deux enfants sont dans la même classe).
       </div>
 
@@ -1978,6 +1990,142 @@ $('#pSave').onclick = () => {
   // premier enregistrement d'une nouvelle liste : pour quels enfants ?
   if (first && parseList(l.text).length) askKidsForList(l);
 };
+/* ---------- Partager / importer des listes ----------
+   Les listes voyagent dans le lien lui-même (après le #) : rien n'est envoyé à un serveur. */
+const SITE_URL = 'https://sanpero45.github.io/mots-magiques/';
+function encodeLists(lists) {
+  const json = JSON.stringify(lists.map(l => ({ n: l.name, t: l.text })));
+  const bytes = new TextEncoder().encode(json);
+  let bin = '';
+  bytes.forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function decodeLists(code) {
+  try {
+    const b64 = code.replace(/-/g, '+').replace(/_/g, '/');
+    const bin = atob(b64 + '==='.slice((b64.length + 3) % 4));
+    const data = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0))));
+    if (!Array.isArray(data)) return null;
+    const lists = data.filter(x => x && typeof x.t === 'string')
+      .map(x => ({ name: String(x.n || 'Liste reçue').slice(0, 60), text: x.t.slice(0, 20000) }))
+      .slice(0, 50);
+    return lists.length ? lists : null;
+  } catch (e) { return null; }
+}
+const shareLink = lists => (location.hostname.endsWith('github.io') ? location.origin + location.pathname : SITE_URL) + '#import=' + encodeLists(lists);
+// Copie dans le presse-papiers ; sinon sélectionne le texte pour une copie à la main.
+async function copyText(text, field, btn) {
+  try { await navigator.clipboard.writeText(text); btn.textContent = '✅ Copié !'; }
+  catch (e) { field.focus(); field.select(); btn.textContent = 'Texte sélectionné : copiez-le'; }
+  setTimeout(() => { btn.textContent = btn.dataset.label; }, 2500);
+}
+function openShare() {
+  const m = document.createElement('div');
+  m.className = 'modal';
+  m.innerHTML = `<div class="card sharebox">
+    <h2>📤 Partager des listes</h2>
+    <p class="note">Cochez les listes à envoyer à un autre parent.</p>
+    <div class="lists">${state.lists.map((l, i) => `<label class="kp"><input type="checkbox" data-l="${i}" ${l.id === editId ? 'checked' : ''}>
+      <span>${esc(l.name)} <small class="muted">(${parseList(l.text).length} mots)</small></span></label>`).join('')}</div>
+    <b>Lien à envoyer</b>
+    <p class="note">En ouvrant ce lien, l'autre parent ajoute ces listes à son jeu (sur le site des Mots Magiques).</p>
+    <textarea class="code" id="shLink" readonly></textarea>
+    <div class="row" style="justify-content:flex-start">
+      <button class="btn" id="shCopy" data-label="📋 Copier le lien">📋 Copier le lien</button>
+      <button class="btn alt" id="shSend" data-label="📨 Envoyer…" hidden>📨 Envoyer…</button>
+    </div>
+    <b>Ou le texte des listes</b>
+    <p class="note">À coller dans « 📥 Importer » (ou dans une nouvelle liste).</p>
+    <textarea id="shText" readonly></textarea>
+    <div class="row" style="justify-content:flex-start"><button class="btn alt" id="shCopyText" data-label="📋 Copier le texte">📋 Copier le texte</button></div>
+    <div class="row"><button class="btn green" id="shClose">Fermer</button></div></div>`;
+  document.body.appendChild(m);
+  const chosen = () => [...m.querySelectorAll('[data-l]:checked')].map(x => state.lists[+x.dataset.l]);
+  const update = () => {
+    const ls = chosen();
+    m.querySelector('#shLink').value = ls.length ? shareLink(ls) : '';
+    m.querySelector('#shText').value = ls.map(l => `# ${l.name}\n${l.text.trim()}`).join('\n\n');
+    ['#shCopy', '#shSend', '#shCopyText'].forEach(id => { m.querySelector(id).disabled = !ls.length; });
+  };
+  m.querySelectorAll('[data-l]').forEach(x => x.onchange = update);
+  update();
+  m.querySelector('#shCopy').onclick = ev => copyText(m.querySelector('#shLink').value, m.querySelector('#shLink'), ev.currentTarget);
+  m.querySelector('#shCopyText').onclick = ev => copyText(m.querySelector('#shText').value, m.querySelector('#shText'), ev.currentTarget);
+  // partage natif du téléphone (SMS, WhatsApp…) quand il existe
+  const send = m.querySelector('#shSend');
+  if (navigator.share) {
+    send.hidden = false;
+    send.onclick = () => navigator.share({ title: 'Les Mots Magiques', text: 'Voici mes listes de mots pour Les Mots Magiques :', url: m.querySelector('#shLink').value })
+      .catch(err => { if (err && err.name !== 'AbortError') send.hidden = true; });
+  }
+  m.querySelector('#shClose').onclick = () => m.remove();
+}
+// Ajoute des listes reçues, sans créer de doublon (même nom et mêmes mots).
+function importLists(lists) {
+  const added = [];
+  lists.forEach((l, i) => {
+    if (state.lists.some(x => x.name === l.name && x.text.trim() === l.text.trim())) return;
+    const nl = { id: 'l' + Date.now() + '-' + i, name: l.name, text: l.text };
+    state.lists.push(nl); added.push(nl);
+  });
+  save();
+  return added;
+}
+// Le texte « # Nom de liste » suivi des mots (format du bouton « Copier le texte »).
+function parseSharedText(txt) {
+  const out = [];
+  let cur = null;
+  txt.split(/\r?\n/).forEach(line => {
+    const h = line.match(/^#\s*(.+)$/);
+    if (h) { cur = { name: h[1].trim().slice(0, 60), text: '' }; out.push(cur); return; }
+    if (!line.trim()) return;
+    if (!cur) { cur = { name: 'Liste reçue', text: '' }; out.push(cur); }
+    cur.text += line.trim() + '\n';
+  });
+  return out.filter(l => parseList(l.text).length);
+}
+function importMessage(added) {
+  if (!added.length) return 'Ces listes sont déjà dans votre jeu.';
+  return `${added.length === 1 ? 'Liste ajoutée' : added.length + ' listes ajoutées'} : ${added.map(l => '« ' + l.name + ' »').join(', ')}. ` +
+    'Pour s\'en servir, choisissez-la dans « 📒 Mes mots » sur l\'accueil, ou pour chaque enfant dans l\'espace Parents.';
+}
+function openImport() {
+  const m = document.createElement('div');
+  m.className = 'modal';
+  m.innerHTML = `<div class="card sharebox">
+    <h2>📥 Importer des listes</h2>
+    <p class="note">Collez ici le lien ou le texte reçu d'un autre parent.</p>
+    <textarea id="imText" placeholder="https://sanpero45.github.io/mots-magiques/#import=…"></textarea>
+    <p class="note" id="imMsg"></p>
+    <div class="row"><button class="btn green" id="imOk">Importer</button><button class="btn alt" id="imNo">Annuler</button></div></div>`;
+  document.body.appendChild(m);
+  m.querySelector('#imNo').onclick = () => m.remove();
+  m.querySelector('#imOk').onclick = () => {
+    const txt = m.querySelector('#imText').value.trim();
+    const code = (txt.match(/#import=([A-Za-z0-9_-]+)/) || [])[1];
+    const lists = code ? decodeLists(code) : parseSharedText(txt);
+    if (!lists || !lists.length) { m.querySelector('#imMsg').textContent = '⚠️ Je ne trouve pas de liste dans ce texte. Vérifiez que le lien a été copié en entier.'; return; }
+    const added = importLists(lists);
+    m.remove();
+    renderParents();
+    popup(importMessage(added));
+  };
+  setTimeout(() => m.querySelector('#imText').focus(), 50);
+}
+// Ouverture du jeu par un lien de partage (…#import=…)
+function importFromLink() {
+  const code = (location.hash.match(/^#import=([A-Za-z0-9_-]+)/) || [])[1];
+  if (!code) return;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  const lists = decodeLists(code);
+  if (!lists) { popup('Ce lien de partage est incomplet : demandez à l\'autre parent de vous le renvoyer.'); return; }
+  popup(`Un parent vous partage ${lists.length === 1 ? 'une liste' : lists.length + ' listes'} de mots : ${lists.map(l => '« ' + l.name + ' »').join(', ')}. Les ajouter à votre jeu ?`, () => {
+    const added = importLists(lists);
+    if (prof) renderHome();
+    popup(importMessage(added));
+  });
+}
+
 function askKidsForList(l) {
   if (state.profiles.length < 2) {
     state.profiles.forEach(k => { k.current = l.id; });
@@ -2014,6 +2162,8 @@ $('#pNew').onclick = () => {
   $('#pSaved').textContent = 'Écrivez les mots puis touchez « Enregistrer ».';
   $('#pText').focus();
 };
+$('#pShare').onclick = openShare;
+$('#pImport').onclick = openImport;
 $('#pDel').onclick = () => {
   if (state.lists.length <= 1) { popup('Il faut garder au moins une liste.'); return; }
   const l = state.lists.find(x => x.id === editId);
@@ -2464,6 +2614,8 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
 if (hasTTS) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
 openProfiles();
 initCloud();
+importFromLink();
+window.addEventListener('hashchange', importFromLink);   // lien ouvert alors que le jeu est déjà affiché
 // Sur le site web (GitHub Pages) : jeu utilisable sans internet et installable comme une appli.
 if ('serviceWorker' in navigator && location.protocol === 'https:' && location.hostname.endsWith('github.io')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});

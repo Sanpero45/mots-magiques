@@ -1466,7 +1466,7 @@ function finishWord(area) {
   save(); updateHeader(); renderProgress();
   const fb = area.querySelector('.feedback');
   if (fb) { fb.className = 'feedback ok'; fb.textContent = ok ? pick(PRAISE) + ' ⭐' : 'Tu as réussi ! 👍'; }
-  sayParts([ok ? pick(PRAISE) : 'Tu as réussi !', e.word]);
+  sayParts([ok ? pick(PRAISE) : 'Tu as réussi !', 'Le mot était : ' + e.word]);
   const nx = document.createElement('div');
   nx.className = 'row';
   nx.innerHTML = `<button class="btn big green" id="nextBtn">${game.i + 1 < game.words.length ? 'Mot suivant ➜' : 'Terminer 🏁'}</button>`;
